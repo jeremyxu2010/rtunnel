@@ -10,5 +10,6 @@
 	<classpathentry kind="lib" path="lib/logback-classic-1.0.1.jar"/>
 	<classpathentry kind="lib" path="lib/logback-core-1.0.1.jar"/>
 	<classpathentry kind="lib" path="lib/slf4j-api-1.6.4.jar"/>
+	<classpathentry kind="lib" path="lib/commons-io-2.4.jar" sourcepath="/Users/jeremy/dev/share/commons-io-2.4/commons-io-2.4-sources.jar"/>
 	<classpathentry kind="output" path="classes"/>
 </classpath>

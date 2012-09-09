@@ -1,4 +1,12 @@
-package com.skybility.cloudsoft.rtunnel.client;
+/*$Id: $
+ --------------------------------------
+  Skybility
+ ---------------------------------------
+  Copyright By Skybility ,All right Reserved
+ * author   date   comment
+ * jeremy  2012-7-26  Created
+*/ 
+package com.skybility.cloudsoft.rtunnel.client; 
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -12,31 +20,28 @@ import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.cli.PosixParser;
+import org.apache.commons.io.IOUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import sun.misc.Signal;
-import sun.misc.SignalHandler;
-
+import com.skybility.cloudsoft.rtunnel.common.AdvancedProperties;
 import com.skybility.cloudsoft.rtunnel.common.LoggerHelper;
 import com.skybility.cloudsoft.rtunnel.common.NetworkInterfaceHelper;
 import com.skybility.cloudsoft.rtunnel.common.RCtrlSegment;
 import com.skybility.cloudsoft.rtunnel.common.RTunnelInputStream;
 import com.skybility.cloudsoft.rtunnel.common.RTunnelOutputStream;
-import com.skybility.cloudsoft.rtunnel.common.RTunnelProperties;
 import com.skybility.cloudsoft.rtunnel.common.RTunnelSocketFactory;
 import com.skybility.cloudsoft.rtunnel.common.SegmentUtils;
 import com.skybility.cloudsoft.rtunnel.common.SocketType;
 import com.skybility.cloudsoft.rtunnel.common.Timer;
+import com.skybility.cloudsoft.rtunnel.common.TunnelStatus;
+import com.skybility.cloudsoft.rtunnel.event.ClientTunnelStatusChangedEvent;
+import com.skybility.cloudsoft.rtunnel.event.EventDispatcher;
+import com.skybility.cloudsoft.rtunnel.listener.EventListener;
+ 
+public class RTunnelClient{
 
-public class RTunnelClient extends Thread{
-	
-
-
-	private static Logger logger = LoggerFactory.getLogger(RTunnelClient.class);
-	
 	private static InetAddress LOCAL_INET_ADDRESS = null;
-	private static RTunnelClient client;
 	
 	static {
 		try {
@@ -46,62 +51,92 @@ public class RTunnelClient extends Thread{
 		}
 	}
 	
-	public RTunnelClient(){
-		super("RTunnelClient");
-	}
+	private volatile boolean keep_running;
+	private volatile boolean main_keep_running;
+	private String rtunnelBindInterfaceName;
 	
-	public static void main(String[] args) {
-		client = new RTunnelClient();
-		client.parseArgs(args);
-		client.start();
-	}
-
-	private int rserverPort;
-	private String rserverHost;
-	private int forwardPort;
-	private String rTcpHost;
-	private int rTcpPort;
+	private Socket ctrl_sock;
+	private SocketType sockType = SocketType.valueOf(AdvancedProperties.getInstance().requireString("defaultSockType").toUpperCase());
+	private static final int DEFAULT_RTUNNEL_SERVER_PORT = AdvancedProperties.getInstance().requireInteger("defaultServerTunnelPort");
+	private static final String DEFAULT_IP_VERSION = AdvancedProperties.getInstance().getAsString("defaultIpVersion");
+	private static final String DEFAULT_RTUNNEL_BIND_ADDRESS = AdvancedProperties.getInstance().requireString("defaultRtunnelBindAddress");
+	private static final int heartbeatInterval = AdvancedProperties.getInstance().requireInteger("heartbeatInterval");
+	private static final int heartbeatTimeout = AdvancedProperties.getInstance().requireInteger("heartbeatTimeout");
+	private static final int closeTunnelWaitTimeout = AdvancedProperties.getInstance().requireInteger("closeTunnelWaitTimeout");
+	private static final int statusNotifyInterval = AdvancedProperties.getInstance().requireInteger("statusNotifyInterval");
+	
+	private static Logger logger = LoggerFactory.getLogger(RTunnelClient.class);
 	
 	private RTunnelInputStream ctrl_sock_in;
 
 	private RTunnelOutputStream ctrl_sock_out;
 	
-	private static int CLIENT_STATUS_INIT = 0;
-	private static int CLIENT_STATUS_READY = 1;
-	
-	private int client_statue = CLIENT_STATUS_INIT;
-	
-	private volatile boolean keep_running;
-	private volatile boolean main_keep_running;
-	
-	private Map<Integer, Socket> tcpSocks = new ConcurrentHashMap<Integer, Socket>();
-	
-	private Map<Integer, Socket> rSocks = new ConcurrentHashMap<Integer, Socket>();
-	private SocketType sockType;
-	private Socket ctrl_sock;
-	
 	private Timer heartbeatTimer = null;
 	
 	private Timer ackHeartbeatTimer = null;
 	
-	private static int heartbeatInterval = RTunnelProperties.getIntegerProperty("heartbeatInterval");
+	private Timer statusNotifyTimer = null;
 	
-	private static int heartbeatTimeout = RTunnelProperties.getIntegerProperty("heartbeatTimeout");
+	private Map<Integer, Socket> tcpSocks = new ConcurrentHashMap<Integer, Socket>();
 	
-	private static final String DEFAULT_SOCK_TYPE = RTunnelProperties.getStringProperty("defaultSockType");
-	private static final int DEFAULT_RTUNNEL_SERVER_PORT = RTunnelProperties.getIntegerProperty("defaultServerTunnelPort");
-	private static final String DEFAULT_RTUNNEL_BIND_ADDRESS = RTunnelProperties.getStringProperty("defaultRtunnelBindAddress");
-	private static final String DEFAULT_IP_VERSION = RTunnelProperties.getStringProperty("defaultIpVersion");
+	private Map<Integer, Socket> rSocks = new ConcurrentHashMap<Integer, Socket>();
+	
+	private EventDispatcher<ClientTunnelStatusChangedEvent> eventDispatcher = new EventDispatcher<ClientTunnelStatusChangedEvent>("ClientEventDispatcher");
+	
+	private Object closeTunnelLock = new Object();
+	
+	public void setRserverHost(String rserverHost) {
+    	this.rserverHost = rserverHost;
+    }
+
+	public void setRserverPort(int rserverPort) {
+    	this.rserverPort = rserverPort;
+    }
+
+	public void setForwardPort(int forwardPort) {
+    	this.forwardPort = forwardPort;
+    }
+	
+	public void setRTcpPort(int rTcpPort) {
+		this.rTcpPort = rTcpPort;
+	}
+
+	public void setRTcpHost(String rTcpHost) {
+		this.rTcpHost = rTcpHost;
+	}
+
+	private String rserverHost;
+	private int rserverPort;
+	private int forwardPort;
+	private int rTcpPort;
+
+
+	private String rTcpHost;
 	
 	private long lastCheckHeartbeatTimestamp = -1L;
+	private Thread clientLogicThread;
+	
+	public RTunnelClient(){
+	}
+	
+	public void addEventListener(EventListener<ClientTunnelStatusChangedEvent> l){
+		eventDispatcher.addListener(l);
+	}
+	
+	public void removeEventListener(EventListener<ClientTunnelStatusChangedEvent> l){
+		eventDispatcher.removeListener(l);
+	}
+	
+	public void clearEventListeners() {
+		eventDispatcher.clearEventListeners();
+    }
 
-	private String rtunnelBindInterfaceName;
-
-	@Override
-	public void run() {
-		ExitSignalHandler exitSignalHandler = new ExitSignalHandler();
-		exitSignalHandler.install("INT");
+	protected Logger log() {
+		return logger;
+	}
+	public void start(){
 		Runtime.getRuntime().addShutdownHook(new ShutdownHookThread());
+		eventDispatcher.startDispatch();
 		main_keep_running = true;
 		
 		Runnable clientLogicRunnable = new Runnable() {
@@ -127,8 +162,7 @@ public class RTunnelClient extends Thread{
 					return;
 				}
 				
-				if (ctrl_sock != null
-						&& client_statue == CLIENT_STATUS_INIT) {
+				if (ctrl_sock != null) {
 					try {
 						ctrl_sock_in = new RTunnelInputStream(
 								ctrl_sock.getInputStream());
@@ -141,11 +175,13 @@ public class RTunnelClient extends Thread{
 						return;
 					}
 
-					RCtrlSegment ctrlSegment = RCtrlSegment.contructTcpServerPortRCtrlSegment(forwardPort, rTcpPort);
+					RCtrlSegment ctrlSegment = RCtrlSegment.constructTcpServerPortRCtrlSegment(forwardPort, rTcpPort);
 					logger.debug("write control segment " + ctrlSegment);
 					RCtrlSegment ctrlSegment2 = null;
 					try {
-						ctrl_sock_out.writeCtlSegment(ctrlSegment);
+						synchronized (ctrl_sock_out) {
+							ctrl_sock_out.writeCtlSegment(ctrlSegment);
+						}
 						ctrlSegment2 = ctrl_sock_in.readCtlSegment();
 					} catch (IOException e) {
 						logger.debug("io error. " + e);
@@ -157,7 +193,9 @@ public class RTunnelClient extends Thread{
 
 					if (ctrlSegment2.getType() == RCtrlSegment.ACK_TCP_SERVER_PORT_FLAG) {
 						if(ctrlSegment2.getContent().length > 0 && ctrlSegment2.getContent()[0] == (byte)0){
-							client_statue = CLIENT_STATUS_READY;
+							eventDispatcher.dispatchEvent(new ClientTunnelStatusChangedEvent(rTcpHost, rTcpPort, rserverHost, forwardPort,TunnelStatus.OK));
+							statusNotifyTimer = new Timer("statusNotifyTimer", new StatusNotifyTimerTask(new ClientTunnelStatusChangedEvent(rTcpHost, rTcpPort, rserverHost, forwardPort,TunnelStatus.ALIVE)));
+							statusNotifyTimer.schedule(0, statusNotifyInterval);
 							logger.info("the tunnel to transit server is ready.");
 							
 							TcpSocketAcceptThread tcpSocketAcceptThread = new TcpSocketAcceptThread(
@@ -196,7 +234,7 @@ public class RTunnelClient extends Thread{
 			}
 		};
 		while(main_keep_running){
-			Thread clientLogicThread = new Thread(clientLogicRunnable, "clientLogicThread");
+			clientLogicThread = new Thread(clientLogicRunnable, "clientLogicThread");
 			clientLogicThread.start();
 			try {
 				clientLogicThread.join();
@@ -207,95 +245,79 @@ public class RTunnelClient extends Thread{
 		}
 	}
 	
-	private void parseArgs(String[] args) {
+	private void sendCloseTunnelSegment(){
 		try {
-			Options options = new Options();
-			options.addOption("h", true, "rtunnel server host");
-			options.addOption("p", true, "rtunnel server port");
-			options.addOption("R", true, "forward arguments");
-			options.addOption("t", true, "socket type");
-			options.addOption("i", true, "bind network interface name");
-			CommandLineParser parser = new PosixParser();
-			CommandLine cmd = parser.parse( options, args);
-			String serverHost = cmd.getOptionValue("h");
-			if(serverHost != null){
-				this.rserverHost = serverHost;
+			RCtrlSegment ctrlSegment = RCtrlSegment.constructCloseTunnelRCtrlSegment();
+			logger.debug("write close tunnel segment " + ctrlSegment);
+			synchronized (ctrl_sock_out) {
+				ctrl_sock_out.writeCtlSegment(ctrlSegment);
 			}
-			String s_serverPort = cmd.getOptionValue("p", Integer.toString(DEFAULT_RTUNNEL_SERVER_PORT));
-			if (s_serverPort != null){
-				try {
-					this.rserverPort = Integer.parseInt(s_serverPort);
-				} catch (NumberFormatException e) {
-					logger.debug("arguments error.", e);
-					this.rserverPort = DEFAULT_RTUNNEL_SERVER_PORT;
-				}
-			}
-			String forwardArgs = cmd.getOptionValue("R");
-			if(forwardArgs != null){
-				String[] argParts = forwardArgs.split(":");
-				this.forwardPort = Integer.parseInt(argParts[0]);
-				this.rTcpHost = argParts[1];
-				this.rTcpPort = Integer.parseInt(argParts[2]);
-			}
-			String sockType = cmd.getOptionValue("t", DEFAULT_SOCK_TYPE);
-			if("tcp".equals(sockType)){
-				this.sockType = SocketType.TCP;
-			} else {
-				this.sockType = SocketType.UDP;
-			}
-			this.rtunnelBindInterfaceName = cmd.getOptionValue("i");
-		} catch (ParseException e) {
-			logger.debug("parse arguments error.", e);
-			this.printUsage();
+			logger.debug("write close tunnel segment success.");
+		} catch (IOException e) {
+			logger.debug("send close tunnel segment error. " + e);
 		}
 	}
 	
-	private void cleanup() {
+	public void stop(){
+		main_keep_running=false;
+		if(clientLogicThread != null && !clientLogicThread.isInterrupted()){
+			clientLogicThread.interrupt();
+		}
+		cleanup();
+		try {
+	        Thread.sleep(5000L);
+        } catch (InterruptedException e) {
+        	logger.error("thread is interrupted.");
+        }
+		eventDispatcher.stopDispatch();
+	}
+	
+	public void cleanup() {
 		logger.debug("start cleanup");
+		
+		Thread sendCloseTunnelSegmentThread = new Thread(new Runnable(){
+			@Override
+            public void run() {
+				sendCloseTunnelSegment();
+				synchronized (closeTunnelLock) {
+					closeTunnelLock.notifyAll();
+                }
+            }});
+		sendCloseTunnelSegmentThread.start();
+		synchronized (closeTunnelLock) {
+			try {
+	            closeTunnelLock.wait(closeTunnelWaitTimeout);
+            } catch (InterruptedException e) {
+	            //ignore exception
+            }
+        }
+		
 		if(ackHeartbeatTimer != null){
 			ackHeartbeatTimer.destroy();
 		}
 		if(heartbeatTimer != null){
 			heartbeatTimer.destroy();
 		}
-		client_statue=CLIENT_STATUS_INIT;
+		if(statusNotifyTimer != null){
+			statusNotifyTimer.destroy();
+		}
+		eventDispatcher.dispatchEvent(new ClientTunnelStatusChangedEvent(rTcpHost, rTcpPort, rserverHost, forwardPort,TunnelStatus.ERROR));
+		
 		keep_running = false;
 		for(Socket sock : tcpSocks.values()){
-			if(sock != null){
-				try {
-					sock.close();
-				} catch (IOException e) {
-					//quiet close sock
-				}
-			}
+			IOUtils.closeQuietly(sock);
 		}
 		tcpSocks.clear();
 		for(Socket sock : rSocks.values()){
-			if(sock != null){
-				try {
-					sock.close();
-				} catch (IOException e) {
-					//quiet close sock
-				}
-			}
+			IOUtils.closeQuietly(sock);
 		}
 		rSocks.clear();
-		if(this.ctrl_sock != null){
-			try {
-				this.ctrl_sock.close();
-			} catch (IOException e) {
-				//quiet close sock
-			}
-		}
+		IOUtils.closeQuietly(this.ctrl_sock);
 		logger.info("the tunnel to transit server is closed.");
 		LoggerHelper.stopLogging();
-	}
-
-	private void printUsage() {
-		System.out.println(String.format("java -Dlogback.configurationFile=conf/rtunnel_logback.xml %s -h rtunnel_server_ip -p rtunnel_server_port -R port:host:hostport -t tcp -i iface_name", RTunnelClient.class.getName()));
-	}
+    }
 	
-	class TcpSocketAcceptThread extends Thread {
+	private class TcpSocketAcceptThread extends Thread {
 
 		
 		private RTunnelInputStream ctrl_sock_in;
@@ -349,9 +371,10 @@ public class RTunnelClient extends Thread{
 													0);
 								}
 								rSocks.put(rsock.getLocalPort(), rsock);
-								RTunnelOutputStream rsock_out = new RTunnelOutputStream(
+								@SuppressWarnings("resource")
+                                RTunnelOutputStream rsock_out = new RTunnelOutputStream(
 										rsock.getOutputStream());
-								RCtrlSegment ctrlSegment = RCtrlSegment.contructACKNewTcpSocketRCtrlSegment(serverTcpSockBindInfo);
+								RCtrlSegment ctrlSegment = RCtrlSegment.constructACKNewTcpSocketRCtrlSegment(serverTcpSockBindInfo);
 								logger.debug("write control segment "
 										+ ctrlSegment);
 								rsock_out.writeCtlSegment(ctrlSegment);
@@ -371,7 +394,7 @@ public class RTunnelClient extends Thread{
 				} else if (ctrlSegment.getType() == RCtrlSegment.HEART_BEAT_FLAG){
 					logger.debug("read heartbeat segment " + ctrlSegment);
 					byte[] contentBytes = ctrlSegment.getContent();
-					RCtrlSegment ackCtrlSegment = RCtrlSegment.contructACKHeartBeatRCtrlSegment(contentBytes);
+					RCtrlSegment ackCtrlSegment = RCtrlSegment.constructACKHeartBeatRCtrlSegment(contentBytes);
 					logger.debug("write ack heartbeat segment " + ctrlSegment);
 					synchronized (ctrl_sock_out) {
 						try {
@@ -397,14 +420,16 @@ public class RTunnelClient extends Thread{
 
 	}
 	
-	class HeartbeatTimerTask implements Runnable{
+	private class HeartbeatTimerTask implements Runnable{
 
 		@Override
 		public void run() {
 			try {
-				RCtrlSegment ctrlSegment = RCtrlSegment.contructHeartBeatRCtrlSegment();
+				RCtrlSegment ctrlSegment = RCtrlSegment.constructHeartBeatRCtrlSegment();
 				logger.debug("write heartbeat segment " + ctrlSegment);
-				ctrl_sock_out.writeCtlSegment(ctrlSegment);
+				synchronized (ctrl_sock_out) {
+					ctrl_sock_out.writeCtlSegment(ctrlSegment);
+				}
 				logger.debug("write heartbeat segment success.");
 			} catch (IOException e) {
 				logger.debug("send heartbeat error. " + e);
@@ -412,7 +437,7 @@ public class RTunnelClient extends Thread{
 		}
 	}
 	
-	class AckHeartbeatTimerTask  implements Runnable{
+	private class AckHeartbeatTimerTask  implements Runnable{
 
 		@Override
 		public void run() {
@@ -426,29 +451,21 @@ public class RTunnelClient extends Thread{
 
 	}
 	
-	class ExitSignalHandler implements SignalHandler{
-		
-		private SignalHandler oldHandler;
+	private class StatusNotifyTimerTask implements Runnable{
 
-	    // Static method to install the signal handler
-	    public ExitSignalHandler install(String signalName) {
-	        Signal exitSignal = new Signal(signalName);
-	        ExitSignalHandler exitHandler = new ExitSignalHandler();
-	        exitHandler.oldHandler = Signal.handle(exitSignal,exitHandler);
-	        return exitHandler;
-	    }
+		private ClientTunnelStatusChangedEvent event;
+
+		public StatusNotifyTimerTask(ClientTunnelStatusChangedEvent event) {
+	        this.event = event;
+        }
 
 		@Override
-		public void handle(Signal sig) {
-			logger.info("tunnel task shutdown normally, clean system resource.");
-			cleanup();
-			if (oldHandler != SIG_DFL && oldHandler != SIG_IGN) {
-                oldHandler.handle(sig);
-            }
+		public void run() {
+			eventDispatcher.dispatchEvent(this.event);
 		}
 	}
 	
-	class RTunnelClientPipeShutdownHook extends Thread {
+	private class RTunnelClientPipeShutdownHook extends Thread {
 
 		private Socket tcp_sock;
 		private Socket rsock;
@@ -463,32 +480,64 @@ public class RTunnelClient extends Thread{
 		public void run() {
 			tcpSocks.remove(tcp_sock.getPort());
 			rSocks.remove(rsock.getPort());
-			if(tcp_sock != null){
-				try {
-					tcp_sock.close();
-				} catch (IOException e) {
-					//quiet close sock
-				}
-			}
-			if(rsock != null){
-				try {
-					rsock.close();
-				} catch (IOException e) {
-					//quiet close sock
-				}
-			}
+			IOUtils.closeQuietly(tcp_sock);
+			IOUtils.closeQuietly(rsock);
 		}
 	}
 	
-	class ShutdownHookThread extends Thread {
+	private class ShutdownHookThread extends Thread {
 		@Override
 		public void run() {
 			logger.info("tunnel task shutdown normally, clean system resource.");
-			main_keep_running=false;
-			if(!client.isInterrupted()){
-				client.interrupt();
-			}
-			cleanup();
+			RTunnelClient.this.stop();
 		}
 	}
+	
+	private void parseArgs(String[] args) {
+		try {
+			Options options = new Options();
+			options.addOption("h", true, "rtunnel server host");
+			options.addOption("p", true, "rtunnel server port");
+			options.addOption("R", true, "forward arguments");
+			options.addOption("t", true, "socket type");
+			options.addOption("i", true, "bind network interface name");
+			CommandLineParser parser = new PosixParser();
+			CommandLine cmd = parser.parse( options, args);
+			String serverHost = cmd.getOptionValue("h");
+			if(serverHost != null){
+				this.rserverHost = serverHost;
+			}
+			String s_serverPort = cmd.getOptionValue("p", Integer.toString(DEFAULT_RTUNNEL_SERVER_PORT));
+			if (s_serverPort != null){
+				try {
+					this.rserverPort = Integer.parseInt(s_serverPort);
+				} catch (NumberFormatException e) {
+					logger.debug("arguments error.", e);
+					this.rserverPort = DEFAULT_RTUNNEL_SERVER_PORT;
+				}
+			}
+			String forwardArgs = cmd.getOptionValue("R");
+			if(forwardArgs != null){
+				String[] argParts = forwardArgs.split(":");
+				this.forwardPort = Integer.parseInt(argParts[0]);
+				this.rTcpHost = argParts[1];
+				this.rTcpPort = Integer.parseInt(argParts[2]);
+			}
+			this.rtunnelBindInterfaceName = cmd.getOptionValue("i");
+		} catch (ParseException e) {
+			logger.debug("parse arguments error.", e);
+			this.printUsage();
+		}
+	}
+	
+	private void printUsage() {
+		System.out.println(String.format("java -Dlogback.configurationFile=conf/rtunnel_logback.xml %s -h rtunnel_server_ip -p rtunnel_server_port -R port:host:hostport -i iface_name", RTunnelClient.class.getName()));
+	}
+
+	public static void main(String[] args) {
+		RTunnelClient client = new RTunnelClient();
+		client.parseArgs(args);
+		client.start();
+    }
+	
 }

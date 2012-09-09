@@ -7,7 +7,7 @@ public class RSegment {
 	
 	public static final byte DATA_FLAG = (byte) 0x01;
 	public static final byte HEART_BEAT_FLAG = (byte) 0x02;
-	public static final byte ACK_HEART_BEAT_FLAG = (byte) 0x04;
+	public static final byte ACK_HEART_BEAT_FLAG = (byte) 0x03;
 	
 	public static Map<Integer, String> SEG_TYPE_DESC = new HashMap<Integer, String>();
     static {
@@ -19,26 +19,26 @@ public class RSegment {
 	private int contentLen;
 	private byte[] content;
 	
-	private RSegment(byte segType, int contentLen, byte[] content) {
+	private RSegment(byte segType, byte[] content) {
 		this.segType = segType;
-		this.contentLen = contentLen;
+		this.contentLen = content.length;
 		this.content = content;
 	}
 
 	public static RSegment contructDataRSegment(byte[] content){
-		return new RSegment(RSegment.DATA_FLAG, content.length, content);
+		return new RSegment(RSegment.DATA_FLAG, content);
 	}
 	
 	public static RSegment contructHeartBeatRSegment(){
 		long time = System.currentTimeMillis();
 		byte[] timeBytes = SegmentUtils.longToBytes(time);
-		return new RSegment(RSegment.HEART_BEAT_FLAG, timeBytes.length, timeBytes);
+		return new RSegment(RSegment.HEART_BEAT_FLAG, timeBytes);
 	}
 	
 	public static RSegment contructACKHeartBeatRSegment(byte[] bytes){
 		byte[] toBytes = new byte[bytes.length];
 		System.arraycopy(bytes, 0, toBytes, 0, bytes.length);
-		return new RSegment(RSegment.ACK_HEART_BEAT_FLAG, toBytes.length, toBytes);
+		return new RSegment(RSegment.ACK_HEART_BEAT_FLAG, toBytes);
 	}
 	
 	public byte[] getBytes(){

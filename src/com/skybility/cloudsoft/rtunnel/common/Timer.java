@@ -51,7 +51,7 @@ public class Timer extends Thread
 
                 while (!_scheduled && !_stopped) {
                     try {
-                        wait();
+                        wait(_period);
                     }
                     catch (InterruptedException xcp) {
                         xcp.printStackTrace();

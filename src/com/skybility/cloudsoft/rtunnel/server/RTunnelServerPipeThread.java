@@ -5,12 +5,13 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 
+import org.apache.commons.io.IOUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.skybility.cloudsoft.rtunnel.common.AdvancedProperties;
 import com.skybility.cloudsoft.rtunnel.common.RSegment;
 import com.skybility.cloudsoft.rtunnel.common.RTunnelInputStream;
-import com.skybility.cloudsoft.rtunnel.common.RTunnelProperties;
 import com.skybility.cloudsoft.rtunnel.common.SegmentUtils;
 import com.skybility.cloudsoft.rtunnel.common.Timer;
 
@@ -31,17 +32,17 @@ public class RTunnelServerPipeThread extends Thread{
 	private Timer pingTimer = null;
 	private Timer ackPingTimer = null;
 	
-	private static int bufSize = RTunnelProperties.getIntegerProperty("pipeBufSize");
+	private static int bufSize = AdvancedProperties.getInstance().requireInteger("pipeBufSize");
 	
-	private static int idleTimeout = RTunnelProperties.getIntegerProperty("idleTimeout");
+	private static int idleTimeout = AdvancedProperties.getInstance().requireInteger("idleTimeout");
 	
-	private static int readTimeout = RTunnelProperties.getIntegerProperty("readTimeout");
+	private static int readTimeout = AdvancedProperties.getInstance().requireInteger("readTimeout");
 	
-	private static int rSegmentMaxSize = RTunnelProperties.getIntegerProperty("rSegmentMaxSize");
+	private static int rSegmentMaxSize = AdvancedProperties.getInstance().requireInteger("rSegmentMaxSize");
 	
-	private static int pingInterval = RTunnelProperties.getIntegerProperty("pingInterval");
+	private static int pingInterval = AdvancedProperties.getInstance().requireInteger("pingInterval");
 	
-	private static int ackPingTimeout = RTunnelProperties.getIntegerProperty("ackPingTimeout");
+	private static int ackPingTimeout = AdvancedProperties.getInstance().requireInteger("ackPingTimeout");
 	
 	private static Logger logger = LoggerFactory.getLogger(RTunnelServerPipeThread.class);
 	
@@ -211,34 +212,10 @@ public class RTunnelServerPipeThread extends Thread{
 	}
 	
 	private void closeStream() {
-		if(this.tcp_in != null){
-			try {
-				this.tcp_in.close();
-			} catch (IOException e) {
-				//quiet close stream
-			}
-		}
-		if(this.tcp_out != null){
-			try {
-				this.tcp_out.close();
-			} catch (IOException e) {
-				//quiet close stream
-			}
-		}
-		if(this.rtunnel_in != null){
-			try {
-				this.rtunnel_in.close();
-			} catch (IOException e) {
-				//quiet close stream
-			}
-		}
-		if(this.rtunnel_out != null){
-			try {
-				this.rtunnel_out.close();
-			} catch (IOException e) {
-				//quiet close stream
-			}
-		}
+		IOUtils.closeQuietly(this.tcp_in);
+		IOUtils.closeQuietly(this.tcp_out);
+		IOUtils.closeQuietly(this.rtunnel_in);
+		IOUtils.closeQuietly(this.rtunnel_out);
 	}
 
 	public void setShutdownHook(Thread shutdownHook) {
@@ -247,20 +224,8 @@ public class RTunnelServerPipeThread extends Thread{
 
 	private void killRtunnel2tcpThread() {
 		rtunnel2tcpIsRunning = false;
-		if(rtunnel_in != null){
-			try {
-				rtunnel_in.close();
-			} catch (IOException e1) {
-				//quiet close sock
-			}
-		}
-		if(tcp_out != null){
-			try {
-				tcp_out.close();
-			} catch (IOException e1) {
-				//quiet close sock
-			}
-		}
+		IOUtils.closeQuietly(this.rtunnel_in);
+		IOUtils.closeQuietly(this.tcp_out);
 		if(!rtunnel2tcpThread.isInterrupted()){
 			rtunnel2tcpThread.interrupt();
 		}
@@ -268,20 +233,8 @@ public class RTunnelServerPipeThread extends Thread{
 	
 	private void killTcp2rtunnelThread() {
 		tcp2rtunneIsRunning = false;
-		if(tcp_in != null){
-			try {
-				tcp_in.close();
-			} catch (IOException e1) {
-				//quiet close sock
-			}
-		}
-		if(rtunnel_out != null){
-			try {
-				rtunnel_out.close();
-			} catch (IOException e1) {
-				//quiet close sock
-			}
-		}
+		IOUtils.closeQuietly(this.tcp_in);
+		IOUtils.closeQuietly(this.rtunnel_out);
 		if(!tcp2rtunnelThread.isInterrupted()){
 			tcp2rtunnelThread.interrupt();
 		}

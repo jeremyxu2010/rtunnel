@@ -26,7 +26,7 @@ public class RTunnelInputStream extends FilterInputStream {
 			int contentLen = SegmentUtils.bytesToInt(contentLenBytes);
 			byte[] contentBytes = new byte[contentLen];
 			readFully(contentBytes);
-			RCtrlSegment result = new RCtrlSegment(flag, contentLen, contentBytes);
+			RCtrlSegment result = new RCtrlSegment(flag, contentBytes);
 			if(logger.isDebugEnabled()){
 				StringBuilder sb = new StringBuilder();
 				sb.append("[");
@@ -42,7 +42,7 @@ public class RTunnelInputStream extends FilterInputStream {
 			}
 			return result;
 		}catch(IOException e){
-			e.printStackTrace();
+			logger.error("io expection: ", e);
 			throw e;
 		}
 	}

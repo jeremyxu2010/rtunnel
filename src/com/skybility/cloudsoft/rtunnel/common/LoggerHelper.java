@@ -32,10 +32,10 @@ public class LoggerHelper {
 	}
 	
 	public static String generateClientLogRTunnelid(int forwardPort){
-		return CLIENT_LOGGER_PREFIX + "_" + forwardPort;
+		return CLIENT_LOGGER_PREFIX + forwardPort;
 	}
 	
 	public static String generateServerLogRTunnelid(int forwardPort){
-		return SERVER_LOGGER_PREFIX + "_" + forwardPort;
+		return SERVER_LOGGER_PREFIX + forwardPort;
 	}
 }

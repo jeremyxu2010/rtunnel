@@ -6,22 +6,25 @@ import java.net.Socket;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.apache.commons.io.IOUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.skybility.cloudsoft.rtunnel.common.AdvancedProperties;
 import com.skybility.cloudsoft.rtunnel.common.LoggerHelper;
 import com.skybility.cloudsoft.rtunnel.common.RCtrlSegment;
 import com.skybility.cloudsoft.rtunnel.common.RTunnelInputStream;
 import com.skybility.cloudsoft.rtunnel.common.RTunnelOutputStream;
-import com.skybility.cloudsoft.rtunnel.common.RTunnelProperties;
 import com.skybility.cloudsoft.rtunnel.common.RTunnelSocketFactory;
 import com.skybility.cloudsoft.rtunnel.common.SegmentUtils;
 import com.skybility.cloudsoft.rtunnel.common.SocketType;
 import com.skybility.cloudsoft.rtunnel.common.Timer;
+import com.skybility.cloudsoft.rtunnel.common.TunnelStatus;
+import com.skybility.cloudsoft.rtunnel.event.ServerTunnelStatusChangedEvent;
 
 public class RTunnelServerHandler extends Thread {
 
-	private int forward_tcp_port;
+	private int forwardPort;
 	private ServerSocket tcpServerSock;
 	private Socket ctrl_sock;
 	private RTunnelInputStream ctrl_sock_in;
@@ -30,8 +33,8 @@ public class RTunnelServerHandler extends Thread {
 	private long lastCheckHeartbeatTimestamp = -1L;
 	private Timer heartbeatTimer = null;
 	private Timer ackHeartbeatTimer = null;
-	private static int heartbeatInterval = RTunnelProperties.getIntegerProperty("heartbeatInterval");
-	private static int heartbeatTimeout = RTunnelProperties.getIntegerProperty("heartbeatTimeout");
+	private static int heartbeatInterval = AdvancedProperties.getInstance().requireInteger("heartbeatInterval");
+	private static int heartbeatTimeout = AdvancedProperties.getInstance().requireInteger("heartbeatTimeout");
 	private HeartbeatReadThread heartbeatReadThread;
 	
 	private Map<Integer, Socket> tcpSocks = new ConcurrentHashMap<Integer, Socket>();
@@ -41,44 +44,42 @@ public class RTunnelServerHandler extends Thread {
 	
 	private static Logger logger = LoggerFactory.getLogger(RTunnelServer.class);
 	private RTunnelServer server;
-	private int tcp_port;
 	
 	private String forwardBindAddress;
 	private SocketType sockType;
-
-	public RTunnelServerHandler(String forwardBindAddress, int forward_tcp_port, Socket sock, RTunnelInputStream sock_in, RTunnelOutputStream sock_out, RTunnelServer server, int tcp_port, SocketType sockType) {
+	
+	public RTunnelServerHandler(String forwardBindAddress, int forwardPort, Socket sock, RTunnelInputStream sock_in, RTunnelOutputStream sock_out, RTunnelServer server, SocketType sockType) {
 		super("RTunnelServerHandler");
 		this.forwardBindAddress = forwardBindAddress;
-		this.forward_tcp_port = forward_tcp_port;
+		this.forwardPort = forwardPort;
 		this.ctrl_sock = sock;
 		this.sockType = sockType;
 		this.ctrl_sock_in = sock_in;
 		this.ctrl_sock_out = sock_out;
 		this.server = server;
-		this.tcp_port = tcp_port;
-		this.server.registerServerHandler(this.forward_tcp_port, this);
+		this.server.registerServerHandler(this.forwardPort, this);
 	}
 	
 	@Override
 	public void run() {
 		try {
 			keep_running = true;
-			LoggerHelper.startLogging(LoggerHelper.generateServerLogRTunnelid(tcp_port));
-			logger.info("start to initialize forward tcp socket(forwardPort=" + forward_tcp_port +").");
+			LoggerHelper.startLogging(LoggerHelper.generateServerLogRTunnelid(forwardPort));
+			logger.info("start to initialize forward tcp socket(forwardPort=" + forwardPort +").");
 			try {
 				tcpServerSock = RTunnelSocketFactory.getServerSocket(
-						sockType, forwardBindAddress, forward_tcp_port);
+						sockType, forwardBindAddress, forwardPort);
 			} catch (IOException e) {
 				logger.info("create forward port socket fails.");
 			}
 			
 			if (tcpServerSock != null) {
-				RCtrlSegment ctrlSegment = RCtrlSegment.contructACKTcpServerPortRCtrlSegment(0);
+				RCtrlSegment ctrlSegment = RCtrlSegment.constructACKTcpServerPortRCtrlSegment(0);
 				logger.debug("write control segment " + ctrlSegment);
 				ctrl_sock_out.writeCtlSegment(ctrlSegment);
 			} else {
 				logger.info("establish tunnel fails.");
-				RCtrlSegment ctrlSegment = RCtrlSegment.contructACKTcpServerPortRCtrlSegment(1);
+				RCtrlSegment ctrlSegment = RCtrlSegment.constructACKTcpServerPortRCtrlSegment(1);
 				logger.debug("write control segment " + ctrlSegment);
 				ctrl_sock_out.writeCtlSegment(ctrlSegment);
 				logger.info("the tunnel is broken, close it.");
@@ -96,6 +97,7 @@ public class RTunnelServerHandler extends Thread {
 		tcpServerLoopThread.start();
 		
 		logger.info("the tunnel is established successfully.");
+		server.dispatchEvent(new ServerTunnelStatusChangedEvent(forwardPort,TunnelStatus.OK));
 		
 		heartbeatTimer = new Timer("heartbeatTimer",
 				new HeartbeatTimerTask());
@@ -121,6 +123,7 @@ public class RTunnelServerHandler extends Thread {
 	void cleanup(){
 		logger.debug("start cleanup");
 		keep_running = false;
+		server.dispatchEvent(new ServerTunnelStatusChangedEvent(forwardPort,TunnelStatus.ERROR));
 		if(heartbeatReadThread != null && !heartbeatReadThread.isInterrupted()){
 			heartbeatReadThread.interrupt();
 		}
@@ -131,40 +134,16 @@ public class RTunnelServerHandler extends Thread {
 			heartbeatTimer.destroy();
 		}
 		for(Socket sock : tcpSocks.values()){
-			if(sock != null){
-				try {
-					sock.close();
-				} catch (IOException e) {
-					//quiet close sock
-				}
-			}
+			IOUtils.closeQuietly(sock);
 		}
 		tcpSocks.clear();
-		if(tcpServerSock != null) {
-			try {
-				tcpServerSock.close();
-			} catch (IOException e) {
-				//quiet close sock
-			}
-		}
+		IOUtils.closeQuietly(tcpServerSock);
 		for(Socket sock : rSocks.values()){
-			if(sock != null){
-				try {
-					sock.close();
-				} catch (IOException e) {
-					//quiet close sock
-				}
-			}
+			IOUtils.closeQuietly(sock);
 		}
 		rSocks.clear();
-		if(ctrl_sock != null){
-			try {
-				ctrl_sock.close();
-			} catch (IOException e) {
-				//quiet close sock
-			}
-		}
-		server.unregisterServerHandler(this.forward_tcp_port);
+		IOUtils.closeQuietly(ctrl_sock);
+		server.unregisterServerHandler(this.forwardPort);
 		LoggerHelper.stopLogging();
 	}
 	
@@ -183,12 +162,12 @@ public class RTunnelServerHandler extends Thread {
 					Socket tcpSock = tcpServerSock.accept();
 					int tcpSockBindPort = tcpSock.getPort();
 					tcpSocks.put(tcpSockBindPort, tcpSock);
-					logger.debug("forward_tcp_port=" + forward_tcp_port + ", tcpSockBindPort=" + tcpSockBindPort);
+					logger.debug("forwardPort=" + forwardPort + ", tcpSockBindPort=" + tcpSockBindPort);
 					int bindInfo = (int)(
-						(int)(0xffff & forward_tcp_port) << 16   |
+						(int)(0xffff & forwardPort) << 16   |
 			            (int)(0xffff & tcpSockBindPort) << 0
 		            );
-					RCtrlSegment ctrlSegment = RCtrlSegment.contructNewTcpSocketRCtrlSegment(bindInfo);
+					RCtrlSegment ctrlSegment = RCtrlSegment.constructNewTcpSocketRCtrlSegment(bindInfo);
 					logger.debug("write control segment " + ctrlSegment);
 					synchronized (ctrl_sock_out) {
 						ctrl_sock_out.writeCtlSegment(ctrlSegment);
@@ -207,7 +186,7 @@ public class RTunnelServerHandler extends Thread {
 		@Override
 		public void run() {
 			try {
-				RCtrlSegment ctrlSegment = RCtrlSegment.contructHeartBeatRCtrlSegment();
+				RCtrlSegment ctrlSegment = RCtrlSegment.constructHeartBeatRCtrlSegment();
 				logger.debug("write heartbeat segment " + ctrlSegment);
 				synchronized (ctrl_sock_out) {
 					ctrl_sock_out.writeCtlSegment(ctrlSegment);
@@ -243,7 +222,7 @@ public class RTunnelServerHandler extends Thread {
 					logger.debug("read heartbeat segment " + ctrlSegment);
 					if(ctrlSegment.getType() == RCtrlSegment.HEART_BEAT_FLAG){
 						byte[] contentBytes = ctrlSegment.getContent();
-						RCtrlSegment ackCtrlSegment = RCtrlSegment.contructACKHeartBeatRCtrlSegment(contentBytes);
+						RCtrlSegment ackCtrlSegment = RCtrlSegment.constructACKHeartBeatRCtrlSegment(contentBytes);
 						logger.debug("write ack heartbeat segment " + ctrlSegment);
 						synchronized (ctrl_sock_out) {
 							ctrl_sock_out.writeCtlSegment(ackCtrlSegment);
@@ -257,6 +236,8 @@ public class RTunnelServerHandler extends Thread {
 							logger.info("heartbeat timed out, maybe the tunnel is broken, close it.");
 							cleanup();
 						}
+					} else if(ctrlSegment.getType() == RCtrlSegment.CLOSE_TUNNEL_FLAG){
+						cleanup();
 					}
 				} catch (IOException e) {
 					logger.debug("read heartbeat error. " + e);
@@ -288,20 +269,8 @@ public class RTunnelServerHandler extends Thread {
 		public void run() {
 			tcpSocks.remove(tcp_sock.getPort());
 			rSocks.remove(rsock.getPort());
-			if(tcp_sock != null){
-				try {
-					tcp_sock.close();
-				} catch (IOException e) {
-					//quiet close sock
-				}
-			}
-			if(rsock != null){
-				try {
-					rsock.close();
-				} catch (IOException e) {
-					//quiet close sock
-				}
-			}
+			IOUtils.closeQuietly(tcp_sock);
+			IOUtils.closeQuietly(rsock);
 		}
 	}
 
